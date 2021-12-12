@@ -1,0 +1,5 @@
+# pip install -r requirements.txt
+pandas~=1.2.4
+plotly~=5.3.1
+numpy~=1.20.1
+tqdm~=4.59.0
