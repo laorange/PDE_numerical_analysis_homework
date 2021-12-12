@@ -1,8 +1,11 @@
+__author__ = "GitHub@laorange"
+__license__ = "AGPL-3.0 License"
+
 import pandas as pd
 import plotly
 import plotly.express as px
 import random
-from typing import Union, Dict
+from typing import Union, Dict, Callable
 import numpy as np
 from tqdm import tqdm
 
@@ -88,10 +91,7 @@ class Point(object):
     instance_list = []
 
     def __init__(self, x: Union[int, float], y: Union[int, float], i: int, j: int):
-        self.x = x
-        self.y = y
-        self.i = i
-        self.j = j
+        self.x, self.y, self.i, self.j = x, y, i, j
         self.id_num = len(Point.instance_list)
         Point.instance_list.append(self)
         self.value = None
@@ -101,16 +101,13 @@ class Point(object):
 
     @staticmethod
     def plot_finally():
-        x_list = []
-        y_list = []
-        value_list = []
-        for point in Point.instance_list:
-            x_list.append(point.x)
-            y_list.append(point.y)
-            value_list.append(point.value)
-        df = pd.DataFrame({"x": x_list, "y": y_list, "value": value_list})
-        figure = px.scatter_3d(df, x="x", y="y", z="value", color="value")
-        plotly.offline.plot(figure, filename=f"output.html")
+        x_list = [point.x for point in Point.instance_list]
+        y_list = [point.y for point in Point.instance_list]
+        value_list = [point.value for point in Point.instance_list]
+        df = pd.DataFrame({"x": x_list, "y": y_list, "value": value_list,
+                           "color": np.sqrt(np.abs(np.array(x_list)) ** 2 + np.abs(np.array(y_list)) ** 2)})
+        figure_3d = px.scatter_3d(df, x="x", y="y", z="value", color="color")
+        plotly.offline.plot(figure_3d, filename=f"output_3d.html")
 
 
 class PointWithBoundaryCondition(Point):
@@ -120,8 +117,7 @@ class PointWithBoundaryCondition(Point):
 
     def set_value(self, value: Union[int, float]):
         if abs(value - self.value) > 1e-6:
-            # raise Exception("与边界条件冲突！")
-            print("与边界条件冲突！")
+            print(f"({self.x},{self.y})与边界条件冲突！边界条件：{self.value} | 计算值：{value}")
 
 
 class Table(object):
@@ -154,7 +150,7 @@ class Table(object):
         self.parse_block_marks()
         dimension = len(self.point_dict)
 
-        # A · U = F   ->   U = A^-1 · F
+        # A · U = F => U = A^-1 · F
         self.matrix_a = np.zeros((dimension, dimension))
         self.matrix_f = np.zeros((dimension, 1))
         self.matrix_u = None
@@ -168,8 +164,6 @@ class Table(object):
     def parse_block_marks(self):
         for i, _ in enumerate(self.block_marks):
             for j, __ in enumerate(_):
-                if i == 2 and j == 8:
-                    print()
                 x = self.x_list[i][j]
                 y = self.y_list[i][j]
                 count = 0
@@ -185,11 +179,11 @@ class Table(object):
                     self.point_dict[f"{i},{j}"] = Point(x, y, i, j)
 
     def solve(self):
-        for coordinate, point in tqdm(self.point_dict.items(), desc="正在求解..."):
+        for coordinate, point in tqdm(self.point_dict.items(), desc="正在更新A矩阵..."):
             self.update(point)
         print("正在求A矩阵的逆...")
         self.matrix_u = np.dot(np.linalg.inv(self.matrix_a), self.matrix_f)
-        print("完成！")
+        print("求解完成！即将开始画图...")
         for _index, u in enumerate(self.matrix_u.ravel()):
             Point.instance_list[_index].set_value(u)
 
@@ -201,28 +195,30 @@ class Table(object):
         else:
             self.matrix_f[id_num][0] = Config.f(point.x, point.y)
 
-            # A ↓
+            self.matrix_a[id_num][self.point_dict[f"{point.i - 1},{point.j - 1}"].id_num] = self.get_different_schema(0)(point)
+            self.matrix_a[id_num][self.point_dict[f"{point.i - 1},{point.j}"].id_num] = self.get_different_schema(1)(point)
+            self.matrix_a[id_num][self.point_dict[f"{point.i - 1},{point.j + 1}"].id_num] = self.get_different_schema(2)(point)
+            self.matrix_a[id_num][self.point_dict[f"{point.i},{point.j - 1}"].id_num] = self.get_different_schema(3)(point)
+            self.matrix_a[id_num][self.point_dict[f"{point.i},{point.j}"].id_num] = self.get_different_schema(4)(point)
+            self.matrix_a[id_num][self.point_dict[f"{point.i},{point.j + 1}"].id_num] = self.get_different_schema(5)(point)
+            self.matrix_a[id_num][self.point_dict[f"{point.i + 1},{point.j - 1}"].id_num] = self.get_different_schema(6)(point)
+            self.matrix_a[id_num][self.point_dict[f"{point.i + 1},{point.j}"].id_num] = self.get_different_schema(7)(point)
+            self.matrix_a[id_num][self.point_dict[f"{point.i + 1},{point.j + 1}"].id_num] = self.get_different_schema(8)(point)
 
-            self.matrix_a[id_num][self.point_dict[f"{point.i - 1},{point.j - 1}"].id_num] = 2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2)
-
-            self.matrix_a[id_num][self.point_dict[f"{point.i - 1},{point.j}"].id_num] = \
-                Config.a(point.x, point.y) / Config.h1 ** 2 - Config.d(point.x, point.y) / Config.h1
-
-            self.matrix_a[id_num][self.point_dict[f"{point.i - 1},{point.j + 1}"].id_num] = 2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2)
-
-            self.matrix_a[id_num][self.point_dict[f"{point.i},{point.j - 1}"].id_num] = Config.c(point.x, point.y) / (Config.h2 ** 2)
-
-            self.matrix_a[id_num][self.point_dict[f"{point.i},{point.j}"].id_num] = \
-                -(2 * Config.a(point.x, point.y) / Config.h1 ** 2 + 2 * Config.c(point.x, point.y) / Config.h2 ** 2)
-
-            self.matrix_a[id_num][self.point_dict[f"{point.i},{point.j + 1}"].id_num] = Config.c(point.x, point.y) / (Config.h2 ** 2)
-
-            self.matrix_a[id_num][self.point_dict[f"{point.i + 1},{point.j - 1}"].id_num] = -2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2)
-
-            self.matrix_a[id_num][self.point_dict[f"{point.i + 1},{point.j}"].id_num] = \
-                Config.a(point.x, point.y) / Config.h1 ** 2 + Config.d(point.x, point.y) / Config.h1
-
-            self.matrix_a[id_num][self.point_dict[f"{point.i + 1},{point.j + 1}"].id_num] = 2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2)
+    @staticmethod
+    def get_different_schema(mark_num) -> Callable:
+        schema = [
+            lambda point: 2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2),
+            lambda point: Config.a(point.x, point.y) / Config.h1 ** 2 - Config.d(point.x, point.y) / Config.h1,
+            lambda point: 2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2),
+            lambda point: Config.c(point.x, point.y) / (Config.h2 ** 2),
+            lambda point: -(2 * Config.a(point.x, point.y) / Config.h1 ** 2 + 2 * Config.c(point.x, point.y) / Config.h2 ** 2),
+            lambda point: Config.c(point.x, point.y) / (Config.h2 ** 2),
+            lambda point: -2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2),
+            lambda point: Config.a(point.x, point.y) / Config.h1 ** 2 + Config.d(point.x, point.y) / Config.h1,
+            lambda point: 2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2),
+        ]
+        return schema[mark_num]
 
 
 class Handler(object):
@@ -243,4 +239,4 @@ if __name__ == '__main__':
     handler = Handler()
     handler.table.solve()
     Point.plot_finally()
-    print()
+    print("完成！")
