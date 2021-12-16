@@ -1,13 +1,15 @@
 __author__ = "GitHub@laorange"
 __license__ = "AGPL-3.0 License"
 
-import pandas as pd
-import plotly
-import plotly.express as px
 import random
-from typing import Union, Dict, Callable
+import datetime
+from typing import Union, Dict
+
+import pandas as pd
 import numpy as np
 from tqdm import tqdm
+import plotly
+import plotly.express as px
 
 
 class Util:
@@ -33,6 +35,10 @@ class Util:
     def get_decimal_precision(_num: float):
         return str(_num)[::-1].find(".")
 
+    @staticmethod
+    def print(*args):
+        print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S : "), *args)
+
 
 class Config(object):
     # region TODO: ↓在此区域定义参数
@@ -40,33 +46,37 @@ class Config(object):
     h2: float = 0.02  # y方向的网格高度
 
     # 下方最大值最小值必须留有余量，否则会报错！
-    omega_x_min: float = -3  # Ω区域在x方向的最小值
-    omega_x_max: float = 3  # Ω区域在x方向的最大值
-    omega_y_min: float = -3  # Ω区域在y方向的最小值
-    omega_y_max: float = 3  # Ω区域在y方向的最大值
+    omega_x_min: float = -4  # Ω区域在x方向的最小值
+    omega_x_max: float = 4  # Ω区域在x方向的最大值
+    omega_y_min: float = -4  # Ω区域在y方向的最小值
+    omega_y_max: float = 4  # Ω区域在y方向的最大值
+
+    error_tolerance: float = 1e-5  # 边界条件校验时允许的误差上限
 
     monte_carlo_method_num = 200  # 蒙特卡罗方法的随机次数
 
     @staticmethod
     def in_omega(x: Union[int, float], y: Union[int, float]) -> bool:
         """该函数返回True/False；True表明该点在Ω中，False表明不在Ω中"""
-        return x ** 2 + y ** 2 - 1 <= 0
+        return x ** 2 + y ** 2 <= 1 and (abs(x * y) < 0.25)
 
     @staticmethod
     def a(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
-        return np.sin(x) + np.cos(y)
+        return (1 + (np.exp(-(x * y)))) ** -1
+        # return np.sin(x) + np.cos(y)
 
     @staticmethod
     def b(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
-        return np.sin(2 * x) + np.cos(2 * y)
+        return np.sin(2 * x) + np.cos(3 * y)
 
     @staticmethod
     def c(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
-        return np.sin(x) * np.cos(y)
+        return x ** 2 + y ** 2
 
     @staticmethod
     def d(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
-        return np.sin(2 * x) * np.cos(2 * y)
+        return (1 + (np.exp(-(x + y)))) ** -1
+        # return np.sin(2 * x) * np.cos(2 * y)
 
     @staticmethod
     def f(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
@@ -82,9 +92,18 @@ class Config(object):
     def not_in_omega(x: Union[int, float], y: Union[int, float]) -> bool:
         return not Config.in_omega(x, y)
 
+    @staticmethod
+    def round_x(num: Union[np.array, int, float]):
+        precision_x = Util.get_decimal_precision(Config.h1)
+        return np.round(num, precision_x)
+
+    @staticmethod
+    def round_y(num: Union[np.array, int, float]):
+        precision_y = Util.get_decimal_precision(Config.h2)
+        return np.round(num, precision_y)
+
     x_amount = (omega_x_max - omega_x_min) / h1
-    y_amount = (omega_y_max - omega_y_min) / h1
-    assert Util.multiple_decorator(Util.is_int, x_amount, y_amount)
+    y_amount = (omega_y_max - omega_y_min) / h2
 
 
 class Point(object):
@@ -106,6 +125,8 @@ class Point(object):
         value_list = [point.value for point in Point.instance_list]
         df = pd.DataFrame({"x": x_list, "y": y_list, "value": value_list,
                            "color": np.sqrt(np.abs(np.array(x_list)) ** 2 + np.abs(np.array(y_list)) ** 2)})
+        df.to_csv("result.csv")
+        Util.print("结果已导出到当前目录下的csv文件中，即将开始画图...")
         figure_3d = px.scatter_3d(df, x="x", y="y", z="value", color="color")
         plotly.offline.plot(figure_3d, filename=f"output_3d.html")
 
@@ -116,11 +137,25 @@ class PointWithBoundaryCondition(Point):
         self.value = Config.g(x, y)
 
     def set_value(self, value: Union[int, float]):
-        if abs(value - self.value) > 1e-6:
-            print(f"({self.x},{self.y})与边界条件冲突！边界条件：{self.value} | 计算值：{value}")
+        if abs(value - self.value) > Config.error_tolerance:
+            Util.print(f"({self.x},{self.y})与边界条件冲突！边界条件：{self.value} | 计算值：{value}")
 
 
 class Table(object):
+    def __init__(self, x_list: np.ndarray, y_list: np.ndarray, block_marks: np.ndarray):
+        self.x_list: np.ndarray = x_list
+        self.y_list: np.ndarray = y_list
+        self.block_marks = block_marks
+
+        self.point_dict: Dict[str, Point] = {}
+        self.parse_block_marks()
+        dimension = len(self.point_dict)
+
+        # A · U = F => U = A^-1 · F
+        self.matrix_a = np.zeros((dimension, dimension))
+        self.matrix_f = np.zeros((dimension, 1))
+        self.matrix_u = None
+
     @staticmethod
     def monte_carlo_method(x: Union[int, float], y: Union[int, float]) -> bool:
         """使用Monte Carlo方法判断某区域是否有50%以上在Ω范围内。x, y是该区域左下角的坐标"""
@@ -140,20 +175,6 @@ class Table(object):
         elif Util.multiple_decorator(Config.not_in_omega, *four_point):
             return False
         return Table.monte_carlo_method(i, j)
-
-    def __init__(self, x_list: np.ndarray, y_list: np.ndarray, block_marks: np.ndarray):
-        self.x_list: np.ndarray = x_list
-        self.y_list: np.ndarray = y_list
-        self.block_marks = block_marks
-
-        self.point_dict: Dict[str, Point] = {}
-        self.parse_block_marks()
-        dimension = len(self.point_dict)
-
-        # A · U = F => U = A^-1 · F
-        self.matrix_a = np.zeros((dimension, dimension))
-        self.matrix_f = np.zeros((dimension, 1))
-        self.matrix_u = None
 
     def plot_block_marks(self):
         df = pd.DataFrame({"x": self.x_list.ravel(), "y": self.y_list.ravel(),
@@ -178,15 +199,6 @@ class Table(object):
                 elif count == 8:
                     self.point_dict[f"{i},{j}"] = Point(x, y, i, j)
 
-    def solve(self):
-        for coordinate, point in tqdm(self.point_dict.items(), desc="正在更新A矩阵..."):
-            self.update(point)
-        print("正在求A矩阵的逆...")
-        self.matrix_u = np.dot(np.linalg.inv(self.matrix_a), self.matrix_f)
-        print("求解完成！即将开始画图...")
-        for _index, u in enumerate(self.matrix_u.ravel()):
-            Point.instance_list[_index].set_value(u)
-
     def update(self, point: Point):
         id_num = point.id_num
         if isinstance(point, PointWithBoundaryCondition):
@@ -195,30 +207,27 @@ class Table(object):
         else:
             self.matrix_f[id_num][0] = Config.f(point.x, point.y)
 
-            self.matrix_a[id_num][self.point_dict[f"{point.i - 1},{point.j - 1}"].id_num] = self.get_different_schema(0)(point)
-            self.matrix_a[id_num][self.point_dict[f"{point.i - 1},{point.j}"].id_num] = self.get_different_schema(1)(point)
-            self.matrix_a[id_num][self.point_dict[f"{point.i - 1},{point.j + 1}"].id_num] = self.get_different_schema(2)(point)
-            self.matrix_a[id_num][self.point_dict[f"{point.i},{point.j - 1}"].id_num] = self.get_different_schema(3)(point)
-            self.matrix_a[id_num][self.point_dict[f"{point.i},{point.j}"].id_num] = self.get_different_schema(4)(point)
-            self.matrix_a[id_num][self.point_dict[f"{point.i},{point.j + 1}"].id_num] = self.get_different_schema(5)(point)
-            self.matrix_a[id_num][self.point_dict[f"{point.i + 1},{point.j - 1}"].id_num] = self.get_different_schema(6)(point)
-            self.matrix_a[id_num][self.point_dict[f"{point.i + 1},{point.j}"].id_num] = self.get_different_schema(7)(point)
-            self.matrix_a[id_num][self.point_dict[f"{point.i + 1},{point.j + 1}"].id_num] = self.get_different_schema(8)(point)
+            schema_list = [[lambda _p: 2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2),
+                            lambda _p: Config.a(_p.x, _p.y) / Config.h1 ** 2 - Config.d(_p.x, _p.y) / Config.h1,
+                            lambda _p: 2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2)],
+                           [lambda _p: Config.c(_p.x, _p.y) / (Config.h2 ** 2),
+                            lambda _p: -(2 * Config.a(_p.x, _p.y) / Config.h1 ** 2 + 2 * Config.c(_p.x, _p.y) / Config.h2 ** 2),
+                            lambda _p: Config.c(_p.x, _p.y) / (Config.h2 ** 2)],
+                           [lambda _p: -2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2),
+                            lambda _p: Config.a(_p.x, _p.y) / Config.h1 ** 2 + Config.d(_p.x, _p.y) / Config.h1,
+                            lambda _p: 2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2)]]
+            for _ii, delta_i in enumerate([-1, 0, 1]):
+                for _ij, delta_j in enumerate([-1, 0, 1]):
+                    self.matrix_a[id_num][self.point_dict[f"{point.i + delta_i},{point.j + delta_j}"].id_num] = schema_list[_ii][_ij](point)
 
-    @staticmethod
-    def get_different_schema(mark_num) -> Callable:
-        schema = [
-            lambda point: 2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2),
-            lambda point: Config.a(point.x, point.y) / Config.h1 ** 2 - Config.d(point.x, point.y) / Config.h1,
-            lambda point: 2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2),
-            lambda point: Config.c(point.x, point.y) / (Config.h2 ** 2),
-            lambda point: -(2 * Config.a(point.x, point.y) / Config.h1 ** 2 + 2 * Config.c(point.x, point.y) / Config.h2 ** 2),
-            lambda point: Config.c(point.x, point.y) / (Config.h2 ** 2),
-            lambda point: -2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2),
-            lambda point: Config.a(point.x, point.y) / Config.h1 ** 2 + Config.d(point.x, point.y) / Config.h1,
-            lambda point: 2 * Config.b(point.x, point.y) / (Config.h1 * Config.h2),
-        ]
-        return schema[mark_num]
+    def solve(self):
+        for coordinate, point in tqdm(self.point_dict.items(), desc="正在更新A矩阵..."):
+            self.update(point)
+        Util.print("正在求A矩阵的逆...")
+        self.matrix_u = np.dot(np.linalg.inv(self.matrix_a), self.matrix_f)
+        Util.print("求解完成！")
+        for _index, u in enumerate(self.matrix_u.ravel()):
+            Point.instance_list[_index].set_value(u)
 
 
 class Handler(object):
@@ -229,14 +238,27 @@ class Handler(object):
             for index_j, j in enumerate(y_list[0]):
                 block_marks[index_i][index_j] = int(Table.whether_fill_a_block(i[0], j))
 
-        precision_x = Util.get_decimal_precision(Config.h1)
-        precision_y = Util.get_decimal_precision(Config.h2)
-        self.table = Table(np.round(x_list, precision_x), np.round(y_list, precision_y),
-                           np.round(block_marks, 2 * (precision_x + precision_y)))
+        self.table = Table(Config.round_x(x_list), Config.round_y(y_list), block_marks)
+
+    def verify_feasibility(self):
+        assert Util.is_int(Config.x_amount) and Util.is_int(Config.y_amount)
+        try:
+            for point in self.table.point_dict.values():
+                a_value = Config.a(point.x, point.y)
+                b_value = Config.b(point.x, point.y)
+                c_value = Config.c(point.x, point.y)
+                assert a_value > 0
+                assert b_value > 0
+                assert a_value * c_value - (b_value ** 2) > 0
+        except AssertionError:
+            Util.print('警告！不满足"a>0, b>0, ac-b²>0"！')
+        else:
+            Util.print('检验完成！满足"a>0, b>0, ac-b²>0"')
 
 
 if __name__ == '__main__':
     handler = Handler()
+    handler.verify_feasibility()
     handler.table.solve()
     Point.plot_finally()
-    print("完成！")
+    Util.print("完成！")
