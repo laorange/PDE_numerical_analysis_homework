@@ -3,13 +3,13 @@ __license__ = "AGPL-3.0 License"
 
 import random
 import datetime
-from typing import Union, Dict
+from typing import Union, Dict, Tuple, List
 
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import plotly
-import plotly.express as px
+import plotly.graph_objects as go
 
 
 class Util:
@@ -39,13 +39,22 @@ class Util:
     def print(*args):
         print(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S : "), *args)
 
+    @staticmethod
+    def delete_all_0_col_and_raw_for_2d_array(zs: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        idx0: List[int] = list(np.argwhere(np.all(zs[..., :] == 0, axis=1)).ravel())
+        xs = np.delete(Table.xs, idx0, axis=0)
+        zs = np.delete(zs, idx0, axis=0)
+        idx1: List[int] = list(np.argwhere(np.all(zs[..., :] == 0, axis=0)).ravel())
+        zs = np.delete(zs, idx1, axis=1)
+        ys = np.delete(Table.xs, idx1, axis=0)
+        return xs, ys, zs
+
 
 class Config(object):
     # region TODO: ↓在此区域定义参数
     h1: float = 0.02  # x方向的网格宽度
     h2: float = 0.02  # y方向的网格高度
 
-    # 下方最大值最小值必须留有余量，否则会报错！
     omega_x_min: float = -4  # Ω区域在x方向的最小值
     omega_x_max: float = 4  # Ω区域在x方向的最大值
     omega_y_min: float = -4  # Ω区域在y方向的最小值
@@ -63,7 +72,6 @@ class Config(object):
     @staticmethod
     def a(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
         return (1 + (np.exp(-(x * y)))) ** -1
-        # return np.sin(x) + np.cos(y)
 
     @staticmethod
     def b(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
@@ -76,7 +84,6 @@ class Config(object):
     @staticmethod
     def d(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
         return (1 + (np.exp(-(x + y)))) ** -1
-        # return np.sin(2 * x) * np.cos(2 * y)
 
     @staticmethod
     def f(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
@@ -123,12 +130,22 @@ class Point(object):
         x_list = [point.x for point in Point.instance_list]
         y_list = [point.y for point in Point.instance_list]
         value_list = [point.value for point in Point.instance_list]
-        df = pd.DataFrame({"x": x_list, "y": y_list, "value": value_list,
-                           "color": np.sqrt(np.abs(np.array(x_list)) ** 2 + np.abs(np.array(y_list)) ** 2)})
+        df = pd.DataFrame({"x": x_list, "y": y_list, "value": value_list})
         df.to_csv("result.csv")
         Util.print("结果已导出到当前目录下的csv文件中，即将开始画图...")
-        figure_3d = px.scatter_3d(df, x="x", y="y", z="value", color="color")
-        plotly.offline.plot(figure_3d, filename=f"output_3d.html")
+
+        table_array = np.zeros(Table.x_list.shape)
+        for i, _ in enumerate(table_array):
+            for j, __ in enumerate(_):
+                table_array[i][j] = np.NAN
+        for point in Point.instance_list:
+            table_array[point.i][point.j] = point.value
+        xs, ys, table_array = Util.delete_all_0_col_and_raw_for_2d_array(table_array)
+        fig = go.Figure(data=[go.Surface(z=table_array, x=xs, y=ys)])
+        fig.update_layout(title='result', autosize=True)
+        fig.update_traces(contours_z=dict(show=False, usecolormap=True,
+                                          highlightcolor="limegreen", project_z=True))
+        plotly.offline.plot(fig, filename=f"output_3d_surface.html")
 
 
 class PointWithBoundaryCondition(Point):
@@ -142,9 +159,13 @@ class PointWithBoundaryCondition(Point):
 
 
 class Table(object):
-    def __init__(self, x_list: np.ndarray, y_list: np.ndarray, block_marks: np.ndarray):
-        self.x_list: np.ndarray = x_list
-        self.y_list: np.ndarray = y_list
+    xs = np.linspace(Config.omega_x_min, Config.omega_x_max, int(Config.x_amount))
+    ys = np.linspace(Config.omega_y_min, Config.omega_y_max, int(Config.y_amount))
+    x_list, y_list = np.mgrid[
+                     Config.omega_x_min:Config.omega_x_max:Config.h1,
+                     Config.omega_y_min:Config.omega_y_max:Config.h2]
+
+    def __init__(self, block_marks: np.ndarray):
         self.block_marks = block_marks
 
         self.point_dict: Dict[str, Point] = {}
@@ -177,10 +198,10 @@ class Table(object):
         return Table.monte_carlo_method(i, j)
 
     def plot_block_marks(self):
-        df = pd.DataFrame({"x": self.x_list.ravel(), "y": self.y_list.ravel(),
-                           "z": self.block_marks.ravel()})
-        fig = px.scatter(df, x="x", y="y", color="z")
-        fig.show()
+        xs, ys, zs = Util.delete_all_0_col_and_raw_for_2d_array(self.block_marks)
+        fig = go.Figure(data=[go.Heatmap(x=xs, y=ys, z=zs)])
+        fig.update_layout(title='table', autosize=True)
+        plotly.offline.plot(fig, filename=f"output_table.html")
 
     def parse_block_marks(self):
         for i, _ in enumerate(self.block_marks):
@@ -207,18 +228,22 @@ class Table(object):
         else:
             self.matrix_f[id_num][0] = Config.f(point.x, point.y)
 
-            schema_list = [[lambda _p: 2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2),
-                            lambda _p: Config.a(_p.x, _p.y) / Config.h1 ** 2 - Config.d(_p.x, _p.y) / Config.h1,
-                            lambda _p: 2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2)],
-                           [lambda _p: Config.c(_p.x, _p.y) / (Config.h2 ** 2),
-                            lambda _p: -(2 * Config.a(_p.x, _p.y) / Config.h1 ** 2 + 2 * Config.c(_p.x, _p.y) / Config.h2 ** 2),
-                            lambda _p: Config.c(_p.x, _p.y) / (Config.h2 ** 2)],
-                           [lambda _p: -2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2),
-                            lambda _p: Config.a(_p.x, _p.y) / Config.h1 ** 2 + Config.d(_p.x, _p.y) / Config.h1,
-                            lambda _p: 2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2)]]
+            schema_list = [
+                [lambda _p: 2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2),
+                 lambda _p: Config.a(_p.x, _p.y) / Config.h1 ** 2 - Config.d(_p.x, _p.y) / Config.h1,
+                 lambda _p: 2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2)],
+                [lambda _p: Config.c(_p.x, _p.y) / (Config.h2 ** 2),
+                 lambda _p: -(2 * Config.a(_p.x, _p.y) / Config.h1 ** 2 + 2 * Config.c(_p.x, _p.y) / Config.h2 ** 2),
+                 lambda _p: Config.c(_p.x, _p.y) / (Config.h2 ** 2)],
+                [lambda _p: -2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2),
+                 lambda _p: Config.a(_p.x, _p.y) / Config.h1 ** 2 + Config.d(_p.x, _p.y) / Config.h1,
+                 lambda _p: 2 * Config.b(_p.x, _p.y) / (Config.h1 * Config.h2)]
+            ]
             for _ii, delta_i in enumerate([-1, 0, 1]):
                 for _ij, delta_j in enumerate([-1, 0, 1]):
-                    self.matrix_a[id_num][self.point_dict[f"{point.i + delta_i},{point.j + delta_j}"].id_num] = schema_list[_ii][_ij](point)
+                    self.matrix_a[id_num][
+                        self.point_dict[f"{point.i + delta_i},{point.j + delta_j}"].id_num
+                    ] = schema_list[_ii][_ij](point)
 
     def solve(self):
         for coordinate, point in tqdm(self.point_dict.items(), desc="正在更新A矩阵..."):
@@ -232,13 +257,11 @@ class Table(object):
 
 class Handler(object):
     def __init__(self):
-        x_list, y_list = np.mgrid[Config.omega_x_min:Config.omega_x_max:Config.h1, Config.omega_y_min:Config.omega_y_max:Config.h2]
-        block_marks = np.zeros(x_list.shape)
-        for index_i, i in enumerate(tqdm(x_list, desc="正在将Ω区域锯齿化...")):
-            for index_j, j in enumerate(y_list[0]):
+        block_marks = np.zeros(Table.x_list.shape)
+        for index_i, i in enumerate(tqdm(Table.x_list, desc="正在将Ω区域锯齿化...")):
+            for index_j, j in enumerate(Table.y_list[0]):
                 block_marks[index_i][index_j] = int(Table.whether_fill_a_block(i[0], j))
-
-        self.table = Table(Config.round_x(x_list), Config.round_y(y_list), block_marks)
+        self.table = Table(block_marks)
 
     def verify_feasibility(self):
         assert Util.is_int(Config.x_amount) and Util.is_int(Config.y_amount)
@@ -251,7 +274,7 @@ class Handler(object):
                 assert b_value > 0
                 assert a_value * c_value - (b_value ** 2) > 0
         except AssertionError:
-            Util.print('警告！不满足"a>0, b>0, ac-b²>0"！')
+            Util.print('警告！不满足"a>0, b>0, ac-b²>0"')
         else:
             Util.print('检验完成！满足"a>0, b>0, ac-b²>0"')
 
@@ -259,6 +282,7 @@ class Handler(object):
 if __name__ == '__main__':
     handler = Handler()
     handler.verify_feasibility()
+    handler.table.plot_block_marks()
     handler.table.solve()
     Point.plot_finally()
     Util.print("完成！")
