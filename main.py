@@ -3,18 +3,20 @@ __license__ = "AGPL-3.0 License"
 
 import random
 import datetime
-from typing import Union, Dict, Tuple, List
+from typing import Union, Dict, Tuple, List, Callable
 
 import pandas as pd
 import numpy as np
+import scipy.io
 from tqdm import tqdm
 import plotly
 import plotly.graph_objects as go
+import plotly.express as px
 
 
 class Util:
     @staticmethod
-    def multiple_decorator(func_outputting_bool, *parameters):
+    def multiple_decorator(func_outputting_bool: Callable, *parameters):
         for parameter in parameters:
             if isinstance(parameter, list) or isinstance(parameter, tuple):
                 if func_outputting_bool(*parameter):
@@ -42,11 +44,11 @@ class Util:
     @staticmethod
     def delete_all_0_col_and_raw_for_2d_array(zs: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         idx0: List[int] = list(np.argwhere(np.all(zs[..., :] == 0, axis=1)).ravel())
-        xs = np.delete(Table.xs, idx0, axis=0)
+        ys = np.delete(Table.xs, idx0, axis=0)
         zs = np.delete(zs, idx0, axis=0)
         idx1: List[int] = list(np.argwhere(np.all(zs[..., :] == 0, axis=0)).ravel())
         zs = np.delete(zs, idx1, axis=1)
-        ys = np.delete(Table.xs, idx1, axis=0)
+        xs = np.delete(Table.xs, idx1, axis=0)
         return xs, ys, zs
 
 
@@ -56,38 +58,38 @@ class Config(object):
     h2: float = 0.02  # y方向的网格高度
 
     omega_x_min: float = -4  # Ω区域在x方向的最小值
-    omega_x_max: float = 4  # Ω区域在x方向的最大值
+    omega_x_max: float = 8  # Ω区域在x方向的最大值
     omega_y_min: float = -4  # Ω区域在y方向的最小值
-    omega_y_max: float = 4  # Ω区域在y方向的最大值
+    omega_y_max: float = 8  # Ω区域在y方向的最大值
 
     error_tolerance: float = 1e-5  # 边界条件校验时允许的误差上限
 
-    monte_carlo_method_num = 200  # 蒙特卡罗方法的随机次数
+    monte_carlo_method_num = 10000  # 蒙特卡罗方法的随机次数
 
     @staticmethod
     def in_omega(x: Union[int, float], y: Union[int, float]) -> bool:
         """该函数返回True/False；True表明该点在Ω中，False表明不在Ω中"""
-        return x ** 2 + y ** 2 <= 1 and (abs(x * y) < 0.25)
+        return (x - 2) ** 2 + (y - 2) ** 2 <= 1 and (x - 2) ** 2 + (y - 4) ** 2 / 3 > 1
 
     @staticmethod
     def a(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
-        return (1 + (np.exp(-(x * y)))) ** -1
+        return np.exp(x)
 
     @staticmethod
     def b(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
-        return np.sin(2 * x) + np.cos(3 * y)
+        return np.sin(x + y) ** 2
 
     @staticmethod
     def c(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
-        return x ** 2 + y ** 2
+        return np.exp(y)
 
     @staticmethod
     def d(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
-        return (1 + (np.exp(-(x + y)))) ** -1
+        return (1 + (np.exp(-(x * y)))) ** -1
 
     @staticmethod
     def f(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
-        return np.sin(x) + np.cos(y)
+        return np.exp(x + y)
 
     @staticmethod
     def g(x: Union[int, float], y: Union[int, float]) -> Union[int, float]:
@@ -134,6 +136,9 @@ class Point(object):
         df.to_csv("result.csv")
         Util.print("结果已导出到当前目录下的csv文件中，即将开始画图...")
 
+        fig = px.scatter_3d(df, x="x", y="y", z="value", color="value")
+        plotly.offline.plot(fig, filename=f"output_3d_scatter.html")
+
         table_array = np.zeros(Table.x_list.shape)
         for i, _ in enumerate(table_array):
             for j, __ in enumerate(_):
@@ -142,10 +147,13 @@ class Point(object):
             table_array[point.i][point.j] = point.value
         xs, ys, table_array = Util.delete_all_0_col_and_raw_for_2d_array(table_array)
         fig = go.Figure(data=[go.Surface(z=table_array, x=xs, y=ys)])
-        fig.update_layout(title='result', autosize=True)
-        fig.update_traces(contours_z=dict(show=False, usecolormap=True,
+        fig.update_layout(autosize=True)
+        fig.update_traces(contours_z=dict(show=True, usecolormap=True,
                                           highlightcolor="limegreen", project_z=True))
         plotly.offline.plot(fig, filename=f"output_3d_surface.html")
+
+        print("正在将数据导出到适配matlab的文件中...")
+        scipy.io.savemat('value_for_matlab.mat', {"x": xs, "y": ys, "u": table_array})
 
 
 class PointWithBoundaryCondition(Point):
